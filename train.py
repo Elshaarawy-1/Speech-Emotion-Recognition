@@ -1,140 +1,125 @@
-from sklearn.utils import validation
-from tensorflow.python.keras.engine import training
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+from sklearn.metrics import f1_score, confusion_matrix, ConfusionMatrixDisplay
 from utils import get_dataset, create_model
-import tensorflow as tf
-import random
-import argparse
-import warnings
+import parser
 
-# This is required to avoid librosa's warning about n_fft being too large. I don't know how to fix the issue the warning is trying to fix since
-# Specifying a smaller n_ftt doesn't seem to fix it.
-warnings.filterwarnings("ignore", category=UserWarning)
+def train(train_loader, val_loader, model, optimizer, criterion, epochs=10):
+    best_val_loss = float("inf")
+    patience = 10
+    patience_counter = 0
+    train_losses = []
+    val_losses = []
 
-# Defaults
+    for epoch in range(epochs):
+        model.train()
+        train_loss = 0.0
+        for x, y in train_loader:
+            x, y = x.to(device).float(), y.to(device).long()
+            optimizer.zero_grad()
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item() * x.size(0)
 
-EPOCHS = None
-BATCH_SIZE = None
-model_type = None
-NUM_LABELS = None
-# Argument Parser
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for x, y in val_loader:
+                x, y = x.to(device).float(), y.to(device).long()
+                outputs = model(x)
+                loss = criterion(outputs, y)
+                val_loss += loss.item() * x.size(0)
 
-help_message = "Check the documentation available at https://www.github.com/AnkushMalaker/speech-emotion-recognition for more info on usage."
-parser = argparse.ArgumentParser(description=help_message)
+        train_loss /= len(train_loader.dataset)
+        val_loss /= len(val_loader.dataset)
 
-parser.add_argument("epochs", type=int, help="Specify number of epochs")
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
 
-parser.add_argument(
-    "-B",
-    "--batch_size",
-    type=int,
-    help="Default batch size is 32. Reduce this if the data doesn't fit in your GPU.",
-)
+        print(f"Epoch {epoch+1}/{epochs} — Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
-parser.add_argument(
-    "-C",
-    "--cache",
-    action="store_true",
-    help="Default behaviour is to not use cahce. Caching greatly speeds up the training after 1 epoch but may require a lot of Memory.",
-)
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0
+            torch.save(model.state_dict(), f"saved_model/{epochs}_trained_model.pth")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print("Early stopping triggered.")
+                break
 
-parser.add_argument(
-    "-LR", "--learning_rate", type=float, help="Default Learning rate is 1e-5."
-)
+    # Plot loss curves
+    plt.plot(train_losses, label="Train Loss")
+    plt.plot(val_losses, label="Validation Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Loss Curve")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"outputs/loss_curve_{epochs}.png")
+    plt.close()
 
-parser.add_argument("--train_dir", help="Default data directory is ./train_data")
+def test(model, test_loader, criterion, epochs):
+    model.eval()
+    test_loss = 0.0
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
 
-parser.add_argument(
-    "--val_dir",
-    help="Default behaviour is to take given split from train_dir to do validation. Specify the split using --val_split",
-)
+    with torch.no_grad():
+        for x, y in test_loader:
+            x, y = x.to(device).float(), y.to(device).long()
+            outputs = model(x)
+            loss = criterion(outputs, y)
+            test_loss += loss.item() * x.size(0)
 
-parser.add_argument(
-    "--val_split", type=float, help="Default val_split is 0.2 of train data"
-)
+            _, predicted = torch.max(outputs, 1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(y.cpu().numpy())
 
-parser.add_argument(
-    "--model_type",
-    help='Specifies the specific architecture to be used. Check README for more info. Defaults to "Ravdess".',
-)
+            correct += (predicted == y).sum().item()
+            total += y.size(0)
 
-# This logic has to be improved to adapt to other datasets mentioned in the paper.
-# Or the whole code has to be split into different sections for each, like train_emodb.py, train_xyz,... etc.
-# Currently not handling this argument
-parser.add_argument("--num_labels", help="Specify number of labels")
+    test_loss /= len(test_loader.dataset)
+    accuracy = correct / total
 
-parser.add_argument(
-    "--random_state",
-    type=int,
-    help="Specify random state for consistency in experiments. Use -1 to randomize.",
-)
+    print(f"\nTest Loss: {test_loss:.4f}")
+    print(f"Test Accuracy: {accuracy * 100:.2f}%")
 
-args = parser.parse_args()
+    # F1-Score and Confusion Matrix
+    f1 = f1_score(all_labels, all_preds, average="weighted")
+    print(f"F1 Score (weighted): {f1:.4f}")
 
-EPOCHS = args.epochs
+    cm = confusion_matrix(all_labels, all_preds)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(cmap="Blues")
+    plt.title("Confusion Matrix")
+    plt.savefig(f"outputs/confusion_matrix_{epochs}.png")
+    plt.close()
 
-print(EPOCHS)
-if args.cache:
-    CACHE = True
-else:
-    CACHE = False
+if __name__ == "__main__":
+    args = parser.default_parser()
 
-if args.batch_size:
-    BATCH_SIZE = args.batch_size
-else:
-    BATCH_SIZE = 32
+    train_loader, val_loader, test_loader = get_dataset(
+        batch_size=64,
+        random_state=42,
+        num_workers=4,
+    )
 
-if args.train_dir:
-    train_dir = args.train_dir
-else:
-    train_dir = "./train_data"
+    model = create_model(args.model_type)
 
-if args.val_dir:
-    val_dir = args.val_dir
-else:
-    val_dir = None
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    model.to(device)
 
-if args.random_state == -1:
-    RANDOM_STATE = random.randint(0, 10000)
-else:
-    RANDOM_STATE = 42
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    criterion = nn.CrossEntropyLoss()
 
-if args.val_split:
-    val_split = args.val_split
-else:
-    val_split = 0.2
+    train(train_loader, val_loader, model, optimizer, criterion, epochs=args.epochs)
 
-if args.model_type:
-    model_type = model_type
-else:
-    model_type = "ravdess"
-
-if args.num_labels:
-    NUM_LABELS = args.num_labels
-else:
-    NUM_LABELS = 8
-
-
-train_ds, val_ds = get_dataset(
-    training_dir=train_dir,
-    validation_dir=val_dir,
-    val_split=val_split,
-    batch_size=BATCH_SIZE,
-    random_state=RANDOM_STATE,
-    cache=CACHE,
-)
-
-model = create_model(NUM_LABELS, model_type)
-
-ESCallback = tf.keras.callbacks.EarlyStopping(
-    patience=2, restore_best_weights=True, verbose=3
-)
-
-# Add checkpoint callback
-model.fit(
-    train_ds,
-    validation_data=val_ds,
-    callbacks=ESCallback,
-    epochs=EPOCHS,
-)
-
-model.save(f"saved_model/{EPOCHS}_trained_model")
+    print("\nEvaluating on test set...")
+    test(model, test_loader, criterion, args.epochs)

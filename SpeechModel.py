@@ -1,113 +1,127 @@
-import tensorflow as tf
-from tensorflow.keras import layers as L
-from tensorflow.keras import Model
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-class SpeechModel:
-    def __init__(self, num_output_classes) -> None:
+class BaseSpeechModel(nn.Module):
+    def __init__(self, num_output_classes=6):
+        super(BaseSpeechModel, self).__init__()
         self.num_output_classes = num_output_classes
 
-    def getRAVDESS(self) -> Model:
-        """Returns a tensorflow model that is according to specifications of the baseline CNN model in the paper."""
-        input_layer = L.Input(shape=(193, 1))
+class FirstModel(BaseSpeechModel):
+    def __init__(self, num_output_classes=6):
+        super().__init__(num_output_classes)
 
-        cnn1 = L.Conv1D(256, (5))(input_layer)
-        batch_norm1 = L.BatchNormalization()(cnn1)
-        relu1 = L.ReLU()(batch_norm1)
+        self.conv1 = nn.Conv1d(1, 256, kernel_size=5)
+        self.bn1 = nn.BatchNorm1d(256)
 
-        cnn2 = L.Conv1D(128, (5))(relu1)
-        relu2 = L.ReLU()(cnn2)
-        dropout1 = L.Dropout(0.1)(relu2)
-        batch_norm2 = L.BatchNormalization()(dropout1)
+        self.conv2 = nn.Conv1d(256, 128, kernel_size=5)
+        self.dropout1 = nn.Dropout(0.1)
+        self.bn2 = nn.BatchNorm1d(128)
 
-        max_pool1 = L.MaxPool1D(8)(batch_norm2)
+        self.pool = nn.MaxPool1d(kernel_size=8)
 
-        conv3 = L.Conv1D(128, (5))(max_pool1)
-        relu3 = L.ReLU()(conv3)
-        conv4 = L.Conv1D(128, (5))(relu3)
-        relu4 = L.ReLU()(conv4)
-        conv5 = L.Conv1D(128, (5))(relu4)
-        batch_norm4 = L.BatchNormalization()(conv5)
-        relu5 = L.ReLU()(batch_norm4)
-        dropout2 = L.Dropout(0.2)(relu5)
+        self.conv3 = nn.Conv1d(128, 128, kernel_size=5)
+        self.conv4 = nn.Conv1d(128, 128, kernel_size=5)
+        self.conv5 = nn.Conv1d(128, 128, kernel_size=5)
+        self.bn4 = nn.BatchNorm1d(128)
+        self.dropout2 = nn.Dropout(0.2)
 
-        conv6 = L.Conv1D(128, (5))(dropout2)
-        flatten = L.Flatten()(conv6)
-        dropout3 = L.Dropout(0.2)(flatten)
+        self.conv6 = nn.Conv1d(128, 128, kernel_size=5)
+        self.dropout3 = nn.Dropout(0.2)
 
-        output_logits = L.Dense(self.num_output_classes)(dropout3)
-        batch_norm5 = L.BatchNormalization()(output_logits)
-        softmax = L.Softmax()(batch_norm5)
-        model = Model(inputs=[input_layer], outputs=[softmax])
-        optimizer = tf.keras.optimizers.RMSprop(1e-5)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy()
-        model.compile(optimizer=optimizer, loss=loss)
+        # Temporarily calculate the output shape
+        with torch.no_grad():
+            dummy = torch.zeros(1, 1, 65)
+            dummy_out = self._forward_features(dummy)
+            flattened_size = dummy_out.shape[1]
 
-        return model
+        self.fc = nn.Linear(flattened_size, num_output_classes)
+        self.bn5 = nn.BatchNorm1d(num_output_classes)
 
-    def getEmoDB(self) -> Model:
-        """Returns a tensorflow model that is according to specifications of the EmoDB model A in the paper."""
-        input_layer = L.Input(shape=(193, 1))
+    def _forward_features(self, x):
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = self.dropout1(x)
+        x = self.bn2(x)
+        x = self.pool(x)
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = self.conv5(x)
+        x = F.relu(self.bn4(x))
+        x = self.dropout2(x)
+        x = self.conv6(x)
+        x = x.flatten(start_dim=1)
+        x = self.dropout3(x)
+        return x
 
-        cnn1 = L.Conv1D(256, (5))(input_layer)
-        batch_norm1 = L.BatchNormalization()(cnn1)
-        relu1 = L.ReLU()(batch_norm1)
+    def forward(self, x):
+        x = x.unsqueeze(1)  # (B, 1, 193)
+        x = self._forward_features(x)
+        x = self.fc(x)
+        x = self.bn5(x)
+        return x
 
-        cnn2 = L.Conv1D(128, (5))(relu1)
-        relu2 = L.ReLU()(cnn2)
-        dropout1 = L.Dropout(0.1)(relu2)
+class SecondModel(BaseSpeechModel):
+    def __init__(self, num_output_classes=6):
+        super().__init__(num_output_classes)
 
-        max_pool1 = L.MaxPool1D(8)(dropout1)
+        self.conv1 = nn.Conv1d(in_channels=1, out_channels=256, kernel_size=5)
+        self.batch_norm1 = nn.BatchNorm1d(256)
 
-        conv3 = L.Conv1D(128, (5))(max_pool1)
-        batch_norm2 = L.BatchNormalization()(conv3)
-        relu3 = L.ReLU()(batch_norm2)
-        dropout2 = L.Dropout(0.2)(relu3)
+        self.conv2 = nn.Conv1d(in_channels=256, out_channels=128, kernel_size=5)
+        self.dropout1 = nn.Dropout(0.1)
 
-        flatten = L.Flatten()(dropout2)
+        self.maxpool = nn.MaxPool1d(kernel_size=8)
 
-        output_logits = L.Dense(self.num_output_classes)(flatten)
-        softmax = L.Softmax()(output_logits)
-        model = Model(inputs=[input_layer], outputs=[softmax])
-        optimizer = tf.keras.optimizers.RMSprop(1e-5)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy()
-        model.compile(optimizer=optimizer, loss=loss)
+        self.conv3 = nn.Conv1d(in_channels=128, out_channels=128, kernel_size=5)
+        self.batch_norm2 = nn.BatchNorm1d(128)
+        self.dropout2 = nn.Dropout(0.2)
 
-        return model
+        self.flatten = nn.Flatten()
 
-    def getIEMOCAP(self) -> Model:
-        """Returns a model that is same as EmoDB model in most senses, except dropout value before MaxPool layer is increased and model is compiled with Adam optimizer instead."""
-        input_layer = L.Input(shape=(193, 1))
+        self.fc = nn.Linear(self._get_flattened_size(), num_output_classes)
 
-        cnn1 = L.Conv1D(256, (5))(input_layer)
-        batch_norm1 = L.BatchNormalization()(cnn1)
-        relu1 = L.ReLU()(batch_norm1)
+    def _get_flattened_size(self):
+        # Pass a dummy tensor through the layers to calculate the flattened size
+        with torch.no_grad():
+            x = torch.zeros(1, 1, 65)
+            x = self.conv1(x)
+            x = self.batch_norm1(x)
+            x = F.relu(x)
 
-        cnn2 = L.Conv1D(128, (5))(relu1)
-        relu2 = L.ReLU()(cnn2)
-        dropout1 = L.Dropout(0.2)(relu2)
-        batch_norm2 = L.BatchNormalization()(dropout1)
+            x = self.conv2(x)
+            x = F.relu(x)
+            x = self.dropout1(x)
 
-        max_pool1 = L.MaxPool1D(8)(batch_norm2)
+            x = self.maxpool(x)
 
-        conv3 = L.Conv1D(128, (5))(max_pool1)
-        relu3 = L.ReLU()(conv3)
-        conv4 = L.Conv1D(128, (5))(relu3)
-        relu4 = L.ReLU()(conv4)
-        conv5 = L.Conv1D(128, (5))(relu4)
-        batch_norm4 = L.BatchNormalization()(conv5)
-        relu5 = L.ReLU()(batch_norm4)
-        dropout2 = L.Dropout(0.2)(relu5)
+            x = self.conv3(x)
+            x = self.batch_norm2(x)
+            x = F.relu(x)
+            x = self.dropout2(x)
 
-        conv6 = L.Conv1D(128, (5))(dropout2)
-        flatten = L.Flatten()(conv6)
-        dropout3 = L.Dropout(0.2)(flatten)
+            x = self.flatten(x)
+        return x.shape[1]
 
-        output_logits = L.Dense(self.num_output_classes)(dropout3)
-        batch_norm5 = L.BatchNormalization()(output_logits)
-        softmax = L.Softmax()(batch_norm5)
-        model = Model(inputs=[input_layer], outputs=[softmax])
-        optimizer = tf.keras.optimizers.Adam(1e-5)
-        loss = tf.keras.losses.SparseCategoricalCrossentropy()
-        model.compile(optimizer=optimizer, loss=loss)
+    def forward(self, x):
+        x = x.unsqueeze(1) 
+        x = self.conv1(x)
+        x = self.batch_norm1(x)
+        x = F.relu(x)
 
-        return model
+        x = self.conv2(x)
+        x = F.relu(x)
+        x = self.dropout1(x)
+
+        x = self.maxpool(x)
+
+        x = self.conv3(x)
+        x = self.batch_norm2(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+
+        x = self.flatten(x)
+        x = self.fc(x)
+
+        return x
