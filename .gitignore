@@ -1,0 +1,8 @@
+__pycache__
+.vscode
+.devcontainer.json
+Crema
+Crema-processed
+venv
+outputs
+saved_model
